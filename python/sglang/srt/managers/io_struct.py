@@ -2274,6 +2274,17 @@ class PdRoleSwitchReqOutput(BaseReq, kw_only=True):
     safe_to_restore: bool = False
 
 
+class CheckpointTransportReqInput(BaseReq, kw_only=True):
+    # False tears the PD transfer transport down for a process checkpoint;
+    # True rebuilds it after restore.
+    rebuild: bool = False
+
+
+class CheckpointTransportReqOutput(BaseReq, kw_only=True):
+    success: bool = False
+    message: str = ""
+
+
 class AbortReq(BaseReq, kw_only=True):
     # Whether to abort all requests
     abort_all: bool = False

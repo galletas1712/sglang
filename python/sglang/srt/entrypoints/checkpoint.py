@@ -12,7 +12,9 @@ from fastapi import APIRouter
 from fastapi.responses import ORJSONResponse, Response
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE
+from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.managers.io_struct import (
+    CheckpointTransportReqInput,
     ContinueGenerationReqInput,
     PauseGenerationReqInput,
     ReleaseMemoryOccupationReqInput,
@@ -45,6 +47,10 @@ class CheckpointLifecycle:
             await tokenizer_manager.release_memory_occupation(
                 ReleaseMemoryOccupationReqInput(tags=[GPU_MEMORY_TYPE_KV_CACHE])
             )
+            if _is_disaggregated(tokenizer_manager):
+                await tokenizer_manager.checkpoint_transport(
+                    CheckpointTransportReqInput(rebuild=False)
+                )
             self.prepared = True
 
     async def resume(self, tokenizer_manager) -> None:
@@ -54,11 +60,21 @@ class CheckpointLifecycle:
             await tokenizer_manager.resume_memory_occupation(
                 ResumeMemoryOccupationReqInput(tags=[GPU_MEMORY_TYPE_KV_CACHE])
             )
+            # The transport registers the KV cache, so it is rebuilt only after
+            # the cache is resident again.
+            if _is_disaggregated(tokenizer_manager):
+                await tokenizer_manager.checkpoint_transport(
+                    CheckpointTransportReqInput(rebuild=True)
+                )
             await tokenizer_manager.continue_generation(ContinueGenerationReqInput())
             self.prepared = False
 
 
 checkpoint_lifecycle = CheckpointLifecycle()
+
+
+def _is_disaggregated(tokenizer_manager) -> bool:
+    return tokenizer_manager.disaggregation_mode != DisaggregationMode.NULL
 
 
 def _tokenizer_manager():
