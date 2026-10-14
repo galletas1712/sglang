@@ -307,6 +307,16 @@ def init_mooncake_transfer_engine(
     return _mooncake_transfer_engine
 
 
+def destroy_mooncake_transfer_engine() -> None:
+    """Drop the shared engine so the next init binds the current host address.
+
+    Callers must release every other reference first; the native engine closes
+    its sockets and memory registrations when it is garbage collected.
+    """
+    global _mooncake_transfer_engine
+    _mooncake_transfer_engine = None
+
+
 def get_mooncake_transfer_engine() -> Optional[MooncakeTransferEngine]:
     """Return the shared MooncakeTransferEngine if initialized, else None."""
     return _mooncake_transfer_engine

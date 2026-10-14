@@ -544,6 +544,15 @@ class PrefillBootstrapQueue:
         if hasattr(self.kv_manager, "register_buffer_to_engine"):
             self.kv_manager.register_buffer_to_engine()
 
+    def teardown_transport(self):
+        """Release the transfer transport before a process checkpoint."""
+        self.kv_manager.teardown()
+        self.kv_manager = None
+
+    def rebuild_transport(self):
+        """Recreate the transfer transport after restore; re-registers to bootstrap."""
+        self.kv_manager = self._init_kv_manager()
+
 
 class SchedulerDisaggregationPrefillMixin:
     """

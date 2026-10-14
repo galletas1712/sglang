@@ -994,6 +994,16 @@ class DecodePreallocQueue(DecodeHiCachePreallocMixin):
         if hasattr(self.kv_manager, "register_buffer_to_engine"):
             self.kv_manager.register_buffer_to_engine()
 
+    def teardown_transport(self):
+        """Release the transfer transport before a process checkpoint."""
+        self.kv_manager.teardown()
+        self.kv_manager = None
+        CommonKVReceiver.close_all_sockets()
+
+    def rebuild_transport(self):
+        """Recreate the transfer transport after restore; peers see a new identity."""
+        self.kv_manager = self._init_kv_manager()
+
     def resume_retracted_reqs(
         self, rids_to_check: Optional[List[str]] = None
     ) -> List[Req]:

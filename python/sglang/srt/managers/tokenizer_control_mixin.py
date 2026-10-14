@@ -18,6 +18,8 @@ from sglang.srt.managers.io_struct import (
     AttachHiCacheStorageReqOutput,
     BeginWeightUpdateReqInput,
     BeginWeightUpdateReqOutput,
+    CheckpointTransportReqInput,
+    CheckpointTransportReqOutput,
     ChecksumInfo,
     CheckWeightsReqInput,
     CheckWeightsReqOutput,
@@ -124,6 +126,7 @@ _COMMUNICATOR_SPECS = [
     ("check_weights", CheckWeightsReqOutput),
     ("slow_down", SlowDownReqOutput),
     ("pd_role_switch", PdRoleSwitchReqOutput),
+    ("checkpoint_transport", CheckpointTransportReqOutput),
     ("flush_cache", FlushCacheReqOutput),
     ("add_external_corpus", AddExternalCorpusReqOutput),
     ("remove_external_corpus", RemoveExternalCorpusReqOutput),
@@ -948,6 +951,15 @@ class TokenizerControlMixin:
             new_role=obj.new_role,
             safe_to_restore=safe_to_restore,
         )
+
+    async def checkpoint_transport(
+        self: TokenizerManager, obj: CheckpointTransportReqInput
+    ) -> None:
+        self.auto_create_handle_loop()
+        results = await self.checkpoint_transport_communicator(obj)
+        failures = [r.message for r in results if not r.success]
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
     async def get_internal_state(self: TokenizerManager) -> List[Dict[Any, Any]]:
         self.auto_create_handle_loop()

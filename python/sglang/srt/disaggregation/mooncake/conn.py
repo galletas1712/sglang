@@ -483,6 +483,9 @@ class MooncakeKVManager(StagingManagerMixin, CommonKVManager):
             self.deregister_buffer_to_engine()
         except Exception:
             logger.exception("Failed to deregister buffers during teardown")
+        # The shared engine closes its RDMA devices only once every reference
+        # is gone, and this manager may outlive teardown.
+        self.engine = None
 
         logger.info(
             "MooncakeKVManager torn down (was role=%s)",

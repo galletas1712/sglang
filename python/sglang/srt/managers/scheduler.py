@@ -77,6 +77,7 @@ from sglang.srt.configs.model_config import (
 from sglang.srt.constrained.grammar_manager import GrammarManager
 from sglang.srt.debug_utils.pr_fix_toggle import maybe_revert_pr_fix
 from sglang.srt.disaggregation import role_switch
+from sglang.srt.disaggregation.checkpoint import handle_checkpoint_transport
 from sglang.srt.disaggregation.checksum import KvChecksumComputer
 from sglang.srt.disaggregation.decode import (
     DecodePreallocQueue,
@@ -129,6 +130,7 @@ from sglang.srt.managers.io_struct import (
     BatchTokenizedEmbeddingReqInput,
     BatchTokenizedGenerateReqInput,
     BeginWeightUpdateReqInput,
+    CheckpointTransportReqInput,
     CheckWeightsReqInput,
     ClearHiCacheReqInput,
     ClearHiCacheReqOutput,
@@ -1817,6 +1819,7 @@ class Scheduler(
                 ),
                 (SlowDownReqInput, self.slow_down),
                 (PdRoleSwitchReqInput, self.handle_pd_role_switch),
+                (CheckpointTransportReqInput, self.handle_checkpoint_transport),
                 (
                     ProfileReq,
                     lambda req: self.profiler_manager._profile(req),
@@ -5874,6 +5877,10 @@ class Scheduler(
 
     def handle_pd_role_switch(self, recv_req: PdRoleSwitchReqInput):
         return role_switch.handle_pd_role_switch(self, recv_req)
+
+    def handle_checkpoint_transport(self, recv_req: CheckpointTransportReqInput):
+        """Tear down or rebuild the PD transfer transport around a process checkpoint."""
+        return handle_checkpoint_transport(self, recv_req)
 
     def _sync_disaggregation_mode_to_subcomponents(self):
         # Push the (possibly flipped) mode into sub-components that cache it.

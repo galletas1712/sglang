@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.entrypoints import checkpoint, http_server
 from sglang.srt.managers.tokenizer_manager import ServerStatus
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -12,8 +13,9 @@ register_cpu_ci(est_time=2, suite="base-a-test-cpu")
 
 
 class _FakeTokenizerManager:
-    def __init__(self):
+    def __init__(self, disaggregation_mode=DisaggregationMode.NULL):
         self.calls = []
+        self.disaggregation_mode = disaggregation_mode
 
     async def pause_generation(self, obj):
         await asyncio.sleep(0)
@@ -27,6 +29,9 @@ class _FakeTokenizerManager:
 
     async def continue_generation(self, obj):
         self.calls.append(("continue",))
+
+    async def checkpoint_transport(self, obj):
+        self.calls.append(("transport", "rebuild" if obj.rebuild else "teardown"))
 
 
 def _exec_config(*, enable_memory_saver: bool):
@@ -69,6 +74,24 @@ class TestCheckpointLifecycle(CustomTestCase):
                 tokenizer_manager.calls[2:],
                 [("resume", ["kv_cache"]), ("continue",)],
             )
+
+        asyncio.run(scenario())
+
+    def test_disaggregated_transport_brackets_the_kv_cache(self):
+        """The transfer transport registers the KV cache, so it must be torn
+        down after the release and rebuilt only once the cache is resident."""
+
+        async def scenario():
+            lifecycle = checkpoint.CheckpointLifecycle()
+            tokenizer_manager = _FakeTokenizerManager(DisaggregationMode.PREFILL)
+            await lifecycle.prepare(tokenizer_manager)
+            await lifecycle.resume(tokenizer_manager)
+            self.assertEqual(
+                [call[0] for call in tokenizer_manager.calls],
+                ["pause", "release", "transport", "resume", "transport", "continue"],
+            )
+            self.assertEqual(tokenizer_manager.calls[2][1], "teardown")
+            self.assertEqual(tokenizer_manager.calls[4][1], "rebuild")
 
         asyncio.run(scenario())
 
