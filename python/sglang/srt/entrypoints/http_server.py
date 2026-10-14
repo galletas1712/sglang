@@ -500,6 +500,8 @@ v1_loads_router.route_class = ORJSONRoute
 app.include_router(v1_loads_router)
 
 from sglang.srt.arg_groups.serving_hook import ssl_verify_of
+from sglang.srt.entrypoints.checkpoint import checkpoint_lifecycle
+from sglang.srt.entrypoints.checkpoint import router as checkpoint_router
 from sglang.srt.entrypoints.elastic_ep import router as elastic_ep_router
 from sglang.srt.runtime_context import (
     describe_kv_events_publisher,
@@ -515,6 +517,8 @@ from sglang.srt.runtime_context import (
 
 elastic_ep_router.route_class = ORJSONRoute
 app.include_router(elastic_ep_router)
+checkpoint_router.route_class = ORJSONRoute
+app.include_router(checkpoint_router)
 
 
 def _anthropic_validation_message(raw_errors) -> str:
@@ -712,6 +716,11 @@ async def health_generate(request: Request) -> Response:
 
     if _global_state.tokenizer_manager.server_status == ServerStatus.Starting:
         return Response(status_code=503)
+
+    # A probe generation would wait behind the checkpoint pause, time out
+    # and mark the server unhealthy.
+    if checkpoint_lifecycle.prepared:
+        return Response(status_code=200)
 
     # Let an external E2E driver establish a balanced DP batch before health traffic.
     if envs.SGLANG_DIAG_BYPASS_HEALTH_GENERATE.get() and request.url.path in (
@@ -2448,6 +2457,18 @@ def _freeze_gc_after_server_warmup(server_args: ServerArgs):
         logger.warning("post-warmup freeze_gc failed", exc_info=True)
 
 
+def _prepare_checkpoint_after_server_warmup(server_args: ServerArgs):
+    key = get_serving().admin_api_key or get_serving().api_key
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    res = requests.post(
+        server_args.url() + "/checkpoint/prepare",
+        headers=headers,
+        timeout=600,
+        verify=ssl_verify_of(server_args),
+    )
+    res.raise_for_status()
+
+
 def _wait_and_warmup(
     server_args: ServerArgs,
     launch_callback: Optional[Callable[[], None]] = None,
@@ -2471,6 +2492,9 @@ def _wait_and_warmup(
         _global_state.tokenizer_manager.server_status = ServerStatus.Up
 
     _freeze_gc_after_server_warmup(server_args)
+
+    if get_serving().checkpoint_prepare_on_startup:
+        _prepare_checkpoint_after_server_warmup(server_args)
 
     # The server is ready for requests
     logger.info("The server is fired up and ready to roll!")
