@@ -129,6 +129,7 @@ from sglang.srt.managers.io_struct import (
     BatchTokenizedEmbeddingReqInput,
     BatchTokenizedGenerateReqInput,
     BeginWeightUpdateReqInput,
+    CheckpointReqInput,
     CheckWeightsReqInput,
     ClearHiCacheReqInput,
     ClearHiCacheReqOutput,
@@ -224,6 +225,9 @@ from sglang.srt.managers.schedule_policy import (
 )
 from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
+)
+from sglang.srt.managers.scheduler_components.checkpoint_lifecycle import (
+    SchedulerCheckpointLifecycle,
 )
 from sglang.srt.managers.scheduler_components.dp_attn import SchedulerDPAttnAdapter
 from sglang.srt.managers.scheduler_components.dynamic_chunk_sizer import (
@@ -695,6 +699,7 @@ class Scheduler(
         self.check_truncation_align_fits_chunk()
 
         self.init_weight_updater()
+        self.init_checkpoint_lifecycle()
 
         # Init request dispatcher
         self.init_request_dispatcher()
@@ -1785,6 +1790,7 @@ class Scheduler(
                 (BatchTokenizedGenerateReqInput, self.handle_batch_generate_request),
                 (BatchTokenizedEmbeddingReqInput, self.handle_batch_embedding_request),
                 (FlushCacheReqInput, self.flush_wrapper.handle),
+                (CheckpointReqInput, self.checkpoint_lifecycle.handle),
                 (ClearHiCacheReqInput, self.clear_hicache_storage_wrapped),
                 (AttachHiCacheStorageReqInput, self.attach_hicache_storage_wrapped),
                 (DetachHiCacheStorageReqInput, self.detach_hicache_storage_wrapped),
@@ -2209,6 +2215,7 @@ class Scheduler(
                     self.send_control_output(output, recv_req)
 
         self.flush_wrapper.check_pending()
+        self.checkpoint_lifecycle.check_pending()
         if self.external_corpus_manager is not None:
             self.external_corpus_manager.check_pending_load()
 
@@ -2336,6 +2343,20 @@ class Scheduler(
             is_fully_idle=self.is_fully_idle,
             scheduler=self,
             metrics_collector=self.metrics_collector,
+        )
+
+    def init_checkpoint_lifecycle(self) -> None:
+        self.checkpoint_lifecycle = SchedulerCheckpointLifecycle(
+            enable_memory_saver=get_exec().features.enable_memory_saver,
+            offload_tags=self.weight_updater.offload_tags,
+            is_engine_paused=lambda: self._engine_paused,
+            is_fully_idle=self.is_fully_idle,
+            abort_all=lambda: self.abort_request(AbortReq(abort_all=True)),
+            pause_generation=self.pause_generation,
+            continue_generation=self.continue_generation,
+            release_memory_occupation=self.weight_updater.release_memory_occupation,
+            resume_memory_occupation=self.weight_updater.resume_memory_occupation,
+            send_output=self.ipc_channels.send_to_tokenizer.send_output,
         )
 
     def init_lora_drainer(self) -> None:
@@ -2887,6 +2908,9 @@ class Scheduler(
             ):
                 for item in recv_req.mm_inputs.mm_items:
                     mm_cleanup.callback(item.release_transport_proxies)
+            if self.checkpoint_lifecycle.rejects_new_requests:
+                self.checkpoint_lifecycle.reject(recv_req)
+                return
             self._handle_generate_request(
                 recv_req, mm_cleanup, mm_input_error=mm_input_error
             )
@@ -3597,6 +3621,9 @@ class Scheduler(
             ):
                 for item in recv_req.mm_inputs.mm_items:
                     mm_cleanup.callback(item.release_transport_proxies)
+            if self.checkpoint_lifecycle.rejects_new_requests:
+                self.checkpoint_lifecycle.reject(recv_req)
+                return
             self._handle_embedding_request(
                 recv_req, mm_cleanup, mm_input_error=mm_input_error
             )

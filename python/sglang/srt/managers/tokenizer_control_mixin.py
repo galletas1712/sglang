@@ -18,6 +18,8 @@ from sglang.srt.managers.io_struct import (
     AttachHiCacheStorageReqOutput,
     BeginWeightUpdateReqInput,
     BeginWeightUpdateReqOutput,
+    CheckpointReqInput,
+    CheckpointReqOutput,
     ChecksumInfo,
     CheckWeightsReqInput,
     CheckWeightsReqOutput,
@@ -85,6 +87,7 @@ from sglang.srt.managers.io_struct import (
 from sglang.srt.managers.load_snapshot import LoadSnapshot
 from sglang.srt.runtime_context import (
     get_disagg,
+    get_exec,
     get_lora,
     get_parallel,
     get_serving,
@@ -125,6 +128,7 @@ _COMMUNICATOR_SPECS = [
     ("slow_down", SlowDownReqOutput),
     ("pd_role_switch", PdRoleSwitchReqOutput),
     ("flush_cache", FlushCacheReqOutput),
+    ("checkpoint", CheckpointReqOutput),
     ("add_external_corpus", AddExternalCorpusReqOutput),
     ("remove_external_corpus", RemoveExternalCorpusReqOutput),
     ("list_external_corpora", ListExternalCorporaReqOutput),
@@ -141,6 +145,23 @@ _COMMUNICATOR_SPECS = [
     ("dumper_control", DumperControlReqOutput),
     ("scale_elastic_ep", ScaleElasticEPReqOutput),
 ]
+
+
+def _merge_checkpoint_results(
+    results: List[CheckpointReqOutput],
+) -> CheckpointReqOutput:
+    # DP ranks move independently: failed if any failed, otherwise the state
+    # all share or the transition in progress.
+    states = {r.state: r.error for r in results}
+    if "failed" in states:
+        state, error = "failed", states["failed"]
+    elif len(states) == 1:
+        state, error = next(iter(states)), None
+    else:
+        state = "preparing" if "preparing" in states else "resuming"
+        error = None
+    refusal = next((r.refusal for r in results if r.refusal), None)
+    return CheckpointReqOutput(state=state, error=error, refusal=refusal)
 
 
 def _merge_lora_update_results(results: List[LoRAUpdateOutput]) -> LoRAUpdateOutput:
@@ -873,6 +894,7 @@ class TokenizerControlMixin:
         request: Optional[fastapi.Request] = None,
     ):
         self.auto_create_handle_loop()
+        await self.refuse_during_checkpoint("release memory")
         await self.release_memory_occupation_communicator(obj)
 
     async def resume_memory_occupation(
@@ -881,7 +903,27 @@ class TokenizerControlMixin:
         request: Optional[fastapi.Request] = None,
     ):
         self.auto_create_handle_loop()
+        await self.refuse_during_checkpoint("resume memory")
         await self.resume_memory_occupation_communicator(obj)
+
+    async def checkpoint(
+        self: TokenizerManager, obj: CheckpointReqInput
+    ) -> CheckpointReqOutput:
+        """Report, prepare or resume the process checkpoint lifecycle of every
+        DP rank; see scheduler_components/checkpoint_lifecycle.py."""
+        self.auto_create_handle_loop()
+        return _merge_checkpoint_results(await self.checkpoint_communicator(obj))
+
+    async def checkpoint_serving(self: TokenizerManager) -> bool:
+        """Whether no process checkpoint keeps the server from serving."""
+        # Preparing requires the memory saver, so without it the server serves.
+        if not get_exec().features.enable_memory_saver:
+            return True
+        return (await self.checkpoint(CheckpointReqInput())).state == "running"
+
+    async def refuse_during_checkpoint(self: TokenizerManager, op: str) -> None:
+        if not await self.checkpoint_serving():
+            raise RuntimeError(f"Cannot {op} during a process checkpoint")
 
     async def check_weights(
         self: TokenizerManager,

@@ -2277,6 +2277,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             )
 
     async def pause_generation(self, obj: PauseGenerationReqInput):
+        await self.refuse_during_checkpoint("pause generation")
         async with self.is_pause_cond:
             self.is_pause = True
             if obj.mode != "abort":
@@ -2292,6 +2293,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
                     await asyncio.sleep(1.0)
 
     async def continue_generation(self, obj: ContinueGenerationReqInput):
+        await self.refuse_during_checkpoint("continue generation")
         async with self.is_pause_cond:
             self.is_pause = False
             await self._async_dispatch_to_scheduler(obj)

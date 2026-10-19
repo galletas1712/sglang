@@ -21,6 +21,8 @@ class AuthLevel(str, Enum):
     """Per-endpoint auth level (attached to endpoint function via `@auth_level`)."""
 
     NORMAL = "normal"
+    # Never needs a key, for callers that cannot carry credentials.
+    PUBLIC = "public"
     ADMIN_OPTIONAL = "admin_optional"
     ADMIN_FORCE = "admin_force"
 
@@ -102,6 +104,7 @@ def decide_request_auth(
         path.startswith("/health")
         or path.startswith("/ready")
         or path.startswith("/metrics")
+        or auth_level == AuthLevel.PUBLIC
     ):
         return AuthDecision(allowed=True)
 

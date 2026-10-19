@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from sglang.srt.entrypoints import http_server
 from sglang.srt.managers.tokenizer_manager import ServerStatus, TokenizerManager
@@ -22,6 +23,7 @@ class TestReadyEndpoint(CustomTestCase):
         tokenizer_manager.is_pause = is_pause
         tokenizer_manager.gracefully_exit = gracefully_exit
         tokenizer_manager.server_status = server_status
+        tokenizer_manager.checkpoint_serving = AsyncMock(return_value=True)
 
         prior_state = http_server.get_global_state()
         http_server.set_global_state(

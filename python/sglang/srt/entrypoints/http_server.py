@@ -517,6 +517,7 @@ v1_loads_router.route_class = ORJSONRoute
 app.include_router(v1_loads_router)
 
 from sglang.srt.arg_groups.serving_hook import ssl_verify_of
+from sglang.srt.entrypoints.checkpoint import add_checkpoint_routes
 from sglang.srt.entrypoints.elastic_ep import router as elastic_ep_router
 from sglang.srt.runtime_context import (
     get_disagg,
@@ -531,6 +532,7 @@ from sglang.srt.runtime_context import (
 
 elastic_ep_router.route_class = ORJSONRoute
 app.include_router(elastic_ep_router)
+add_checkpoint_routes(app)
 
 
 def _anthropic_validation_message(raw_errors) -> str:
@@ -708,7 +710,11 @@ async def validate_json_request(raw_request: Request):
 @app.get("/ready")
 async def ready() -> Response:
     """Report whether the server is ready to receive new requests."""
-    status_code = 200 if _global_state.tokenizer_manager.is_ready() else 503
+    tokenizer_manager = _global_state.tokenizer_manager
+    is_ready = (
+        tokenizer_manager.is_ready() and await tokenizer_manager.checkpoint_serving()
+    )
+    status_code = 200 if is_ready else 503
     return Response(status_code=status_code)
 
 
@@ -727,6 +733,11 @@ async def health_generate(request: Request) -> Response:
         return Response(status_code=503)
 
     if _global_state.tokenizer_manager.server_status == ServerStatus.Starting:
+        return Response(status_code=503)
+
+    # A probe generation would be rejected during a process checkpoint and
+    # mark the server unhealthy.
+    if not await _global_state.tokenizer_manager.checkpoint_serving():
         return Response(status_code=503)
 
     # Let an external E2E driver establish a balanced DP batch before health traffic.
@@ -2431,7 +2442,7 @@ def _execute_server_warmup(server_args: ServerArgs):
                 verify=ssl_verify,
             )
             assert res.status_code == 200, f"{res.text}"
-            _global_state.tokenizer_manager.server_status = ServerStatus.Up
+            _mark_server_up(server_args)
 
         else:
             logger.info(f"Start of pd disaggregation warmup ...")
@@ -2456,9 +2467,10 @@ def _execute_server_warmup(server_args: ServerArgs):
                     get_disagg().disaggregation_mode,
                     failed_status_codes,
                 )
-            _global_state.tokenizer_manager.server_status = (
-                ServerStatus.Up if not failed_status_codes else ServerStatus.UnHealthy
-            )
+            if failed_status_codes:
+                _global_state.tokenizer_manager.server_status = ServerStatus.UnHealthy
+            else:
+                _mark_server_up(server_args)
 
     except Exception:
         last_traceback = get_exception_traceback()
@@ -2501,6 +2513,23 @@ def _freeze_gc_after_server_warmup(server_args: ServerArgs):
         logger.warning("post-warmup freeze_gc failed", exc_info=True)
 
 
+def _mark_server_up(server_args: ServerArgs):
+    # Prepare before marking the server Up, so no request starts in between.
+    if get_serving().checkpoint_prepare_on_startup:
+        key = get_serving().admin_api_key or get_serving().api_key
+        res = requests.post(
+            server_args.url() + "/checkpoint/prepare",
+            headers={"Authorization": f"Bearer {key}"} if key else {},
+            timeout=60,
+            verify=ssl_verify_of(server_args),
+        )
+        if res.status_code != 200:
+            logger.error(f"Checkpoint prepare on startup failed: {res.text}")
+            kill_process_tree(os.getpid())
+            return
+    _global_state.tokenizer_manager.server_status = ServerStatus.Up
+
+
 def _wait_and_warmup(
     server_args: ServerArgs,
     launch_callback: Optional[Callable[[], None]] = None,
@@ -2522,7 +2551,7 @@ def _wait_and_warmup(
         if not execute_warmup_func(server_args):
             return
     else:
-        _global_state.tokenizer_manager.server_status = ServerStatus.Up
+        _mark_server_up(server_args)
 
     if post_warmup_callback is not None:
         post_warmup_callback()
