@@ -91,6 +91,7 @@ def _rank(rank):
 
 def _queued_scheduler(req):
     scheduler = object.__new__(Scheduler)
+    scheduler.checkpoint_lifecycle = SimpleNamespace(rejects_new_requests=False)
     scheduler.waiting_queue = [req]
     scheduler.chunked_req = scheduler.mm_receiver = scheduler.dllm_config = None
     scheduler.disaggregation_mode = DisaggregationMode.NULL

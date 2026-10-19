@@ -18,6 +18,7 @@ ADMIN_PATHS = [
     "/stop_profile",
     "/set_trace_level",
     "/freeze_gc",
+    "/checkpoint/prepare",
 ]
 
 
@@ -40,6 +41,30 @@ class TestAdminEndpointAuthLevels(CustomTestCase):
             with self.subTest(path=path):
                 self.assertFalse(self._decide(path, None).allowed)
                 self.assertTrue(self._decide(path, "Bearer admin-secret").allowed)
+
+    def test_checkpoint_orchestrator_routes_need_no_key(self):
+        """Checkpoint orchestrators (SNEP-411) send no credentials, so a server
+        with an API key must still answer status and resume."""
+        for method, path in (
+            ("GET", "/checkpoint/status"),
+            ("POST", "/checkpoint/resume"),
+        ):
+            with self.subTest(path=path):
+                scope = {
+                    "type": "http",
+                    "method": method,
+                    "path": path,
+                    "root_path": "",
+                }
+                decision = decide_request_auth(
+                    method=method,
+                    path=path,
+                    authorization_header=None,
+                    api_key="secret",
+                    admin_api_key="admin-secret",
+                    auth_level=_get_auth_level_from_app_and_scope(app, scope),
+                )
+                self.assertTrue(decision.allowed)
 
 
 if __name__ == "__main__":

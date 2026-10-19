@@ -71,6 +71,7 @@ from sglang.srt.managers.data_parallel_controller import (
 from sglang.srt.managers.detokenizer_manager import run_detokenizer_process
 from sglang.srt.managers.io_struct import (
     BeginWeightUpdateReqInput,
+    CheckpointReqInput,
     CloseSessionReqInput,
     DestroyWeightsUpdateGroupReqInput,
     EmbeddingReqInput,
@@ -1826,6 +1827,27 @@ class Engine(EngineScoreMixin, EngineBase):
         return self.loop.run_until_complete(
             self.tokenizer_manager.resume_memory_occupation(obj, None)
         )
+
+    def checkpoint_prepare(self, mode: str = "wait") -> Optional[str]:
+        """Start preparing for an external process checkpoint: drain with
+        `mode` (wait, abort or retract), then release the KV cache. Poll
+        checkpoint_state() until it is "prepared". Returns why the engine
+        cannot prepare now, with nothing changed, or None."""
+        return self._checkpoint("prepare", mode).refusal
+
+    def checkpoint_resume(self) -> Optional[str]:
+        """Bring back what preparing released and serve, after a restore or in
+        place. Returns why the engine cannot resume, or None."""
+        return self._checkpoint("resume").refusal
+
+    def checkpoint_state(self) -> Tuple[str, Optional[str]]:
+        """The checkpoint lifecycle state and the error that failed it."""
+        out = self._checkpoint("state")
+        return out.state, out.error
+
+    def _checkpoint(self, action: str, mode: str = "wait"):
+        obj = CheckpointReqInput(action=action, mode=mode)
+        return self.loop.run_until_complete(self.tokenizer_manager.checkpoint(obj))
 
     def freeze_gc(self):
         """

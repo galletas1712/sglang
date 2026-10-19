@@ -22,6 +22,9 @@ class TestSchedulerSamplingMaskValidation(CustomTestCase):
         for mode in (DisaggregationMode.PREFILL, DisaggregationMode.DECODE):
             with self.subTest(mode=mode):
                 scheduler = Scheduler.__new__(Scheduler)
+                scheduler.checkpoint_lifecycle = SimpleNamespace(
+                    rejects_new_requests=False
+                )
                 scheduler.enable_session_radix_cache = False
                 scheduler.model_config = SimpleNamespace(
                     hf_eos_token_id={1}, vocab_size=128

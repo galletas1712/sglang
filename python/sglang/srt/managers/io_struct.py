@@ -1861,6 +1861,20 @@ class FlushCacheReqOutput(BaseReq, kw_only=True):
     message: str = ""
 
 
+class CheckpointReqInput(BaseReq, kw_only=True):
+    # "state" only reports; "prepare" drains with `mode` and releases the KV
+    # cache; "resume" brings it back.
+    action: Literal["state", "prepare", "resume"] = "state"
+    mode: str = "wait"
+
+
+class CheckpointReqOutput(BaseReq, kw_only=True):
+    state: str
+    error: Optional[str] = None
+    # Why the action was refused, with nothing changed.
+    refusal: Optional[str] = None
+
+
 class AddExternalCorpusReqInput(BaseReq, kw_only=True):
     corpus_id: Optional[str] = None
     file_path: Optional[str] = None

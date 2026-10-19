@@ -63,6 +63,7 @@ class _TaggedTokenizerManager(TokenizerManager):
 
 def _scheduler(sessions, queued):
     scheduler = Scheduler.__new__(_TaggedScheduler)
+    scheduler.checkpoint_lifecycle = SimpleNamespace(rejects_new_requests=False)
     scheduler.session_controller = sessions
     scheduler.enable_session_radix_cache = False
     scheduler.disaggregation_mode = DisaggregationMode.NULL
