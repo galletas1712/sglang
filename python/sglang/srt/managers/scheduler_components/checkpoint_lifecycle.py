@@ -7,14 +7,15 @@ any number of times, or ends in failed. Each step is one scheduler operation,
 so repeated and concurrent calls from several tokenizer workers or frontends
 are no-ops.
 
-Prepare drains with the requested mode, then releases the KV cache. Weights
-stay on the GPU. Resume brings the KV cache back and serves again.
+Prepare drains with the requested mode, then releases the KV cache and the
+resources' external state. Weights stay on the GPU. Resume brings them back
+and serves again.
 """
 
 import logging
 from enum import Enum
 from http import HTTPStatus
-from typing import Callable, Optional, Set
+from typing import Callable, List, Optional, Protocol, Set
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE
 from sglang.srt.managers.io_struct import (
@@ -44,6 +45,18 @@ class CheckpointState(str, Enum):
     FAILED = "failed"
 
 
+class CheckpointResource(Protocol):
+    """State outside the KV cache that a checkpoint must not contain, such as
+    network endpoints and NIC registrations."""
+
+    def checkpoint_blocker(self) -> Optional[str]:
+        """Why this state cannot be released now, or None."""
+
+    def checkpoint_prepare(self) -> None: ...
+
+    def checkpoint_restore(self) -> None: ...
+
+
 class SchedulerCheckpointLifecycle:
     def __init__(
         self,
@@ -58,6 +71,7 @@ class SchedulerCheckpointLifecycle:
         release_memory_occupation: Callable[[ReleaseMemoryOccupationReqInput], None],
         resume_memory_occupation: Callable[[ResumeMemoryOccupationReqInput], None],
         send_output: Callable[[AbortReq, object], None],
+        resources: List[CheckpointResource],
     ) -> None:
         self._enable_memory_saver = enable_memory_saver
         # Live view of the memory regions released through the admin API.
@@ -70,6 +84,7 @@ class SchedulerCheckpointLifecycle:
         self._release_memory_occupation = release_memory_occupation
         self._resume_memory_occupation = resume_memory_occupation
         self._send_output = send_output
+        self._resources = resources
         self.state = CheckpointState.RUNNING
         self._error: Optional[str] = None
         self._mode: Optional[str] = None
@@ -98,6 +113,8 @@ class SchedulerCheckpointLifecycle:
             self._release_memory_occupation(
                 ReleaseMemoryOccupationReqInput(tags=[GPU_MEMORY_TYPE_KV_CACHE])
             )
+            for resource in reversed(self._resources):
+                resource.checkpoint_prepare()
         except Exception as e:
             self._fail(e)
         else:
@@ -134,6 +151,9 @@ class SchedulerCheckpointLifecycle:
             return f"Memory is already released: {sorted(self._offload_tags)}"
         if self._is_engine_paused():
             return "Preparing for a checkpoint requires unpaused generation"
+        for resource in self._resources:
+            if (blocker := resource.checkpoint_blocker()) is not None:
+                return blocker
 
         logger.info("Preparing for a process checkpoint (drain mode %s)", mode)
         if mode == "abort":
@@ -157,6 +177,9 @@ class SchedulerCheckpointLifecycle:
             self._resume_memory_occupation(
                 ResumeMemoryOccupationReqInput(tags=[GPU_MEMORY_TYPE_KV_CACHE])
             )
+            # After the KV cache, which transports register.
+            for resource in self._resources:
+                resource.checkpoint_restore()
             self.state = CheckpointState.RUNNING
             if self._is_engine_paused():
                 self._continue_generation(ContinueGenerationReqInput())

@@ -22,6 +22,7 @@ def _lifecycle(**overrides) -> SchedulerCheckpointLifecycle:
         release_memory_occupation=MagicMock(),
         resume_memory_occupation=MagicMock(),
         send_output=MagicMock(),
+        resources=[],
     )
     kwargs.update(overrides)
     return SchedulerCheckpointLifecycle(**kwargs)
@@ -69,6 +70,16 @@ class TestSchedulerCheckpointLifecycle(unittest.TestCase):
         self.assertIn("already released", _call(lifecycle, "prepare").refusal)
         self.assertEqual(lifecycle.state, "running")
         lifecycle._abort_all.assert_not_called()
+
+        # A resource that cannot be released refuses before the retract pause.
+        resource = MagicMock()
+        resource.checkpoint_blocker.return_value = "unreleasable"
+        lifecycle = _lifecycle(resources=[resource])
+        self.assertEqual(
+            _call(lifecycle, "prepare", mode="retract").refusal, "unreleasable"
+        )
+        lifecycle._pause_generation.assert_not_called()
+        self.assertFalse(lifecycle.rejects_new_requests)
 
         lifecycle = _lifecycle(
             is_fully_idle=MagicMock(return_value=True),

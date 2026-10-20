@@ -16,6 +16,7 @@ from sglang.srt.mem_cache.memory_pool_host import (
 from sglang.srt.mem_cache.pool_host import common as host_common
 from sglang.srt.mem_cache.pool_host import mha as mha_pool_host
 from sglang.srt.mem_cache.pool_host import mla as mla_pool_host
+from sglang.srt.mem_cache.pool_host.checkpoint import HostPoolCheckpoint
 from sglang.srt.mem_cache.pool_host.common import (
     ALLOC_MEMORY_FUNCS,
     _cuda_host_register,
@@ -29,6 +30,7 @@ from sglang.srt.mem_cache.pool_host.mha import (
     MHATokenToKVPoolHost,
 )
 from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=10, suite="base-a-test-cpu")
@@ -546,6 +548,43 @@ class TestHiCacheHostRegister(unittest.TestCase):
         )
         for ptr, _, _ in cudart.registrations:
             self.assertEqual((ptr - base) % page_copy_bytes, 0)
+
+    def test_checkpoint_frees_pool_pages_and_repins_the_same_ranges(self):
+        """A process checkpoint must not carry the host pool, whose cache prepare
+        flushes. Resume must pin exactly the original ranges, since one CUDA
+        batch copy cannot span two registrations."""
+        cudart = _FakeCudart()
+        with (
+            mock.patch.object(torch.cuda, "cudart", return_value=cudart),
+            mock.patch.object(torch.cuda, "synchronize"),
+        ):
+            allocator = host_common.HostTensorAllocator()
+            buffer = host_common.alloc_with_host_register(
+                dims=(4, 4096),
+                dtype=torch.uint8,
+                device="cpu",
+                pin_memory=True,
+                allocator=allocator,
+            )
+            buffer.fill_(7)
+            pinned = list(cudart.registrations)
+            pool = SimpleNamespace(
+                kv_buffer=buffer, allocator=allocator, pin_memory=True
+            )
+            tree_cache = mock.MagicMock(spec=UnifiedRadixCache)
+            tree_cache.host_pool_group = SimpleNamespace(
+                entries=[SimpleNamespace(name="kv", host_pool=pool)]
+            )
+            checkpoint = HostPoolCheckpoint(tree_cache=tree_cache, storage_backend=None)
+            self.assertIsNone(checkpoint.checkpoint_blocker())
+
+            checkpoint.checkpoint_prepare()
+            self.assertEqual(cudart.unregistrations, [buffer.data_ptr()])
+            self.assertEqual(int(buffer.sum()), 0)
+
+            cudart.registrations.clear()
+            checkpoint.checkpoint_restore()
+            self.assertEqual(cudart.registrations, pinned)
 
 
 if __name__ == "__main__":
