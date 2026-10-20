@@ -303,6 +303,7 @@ from sglang.srt.mem_cache.common import (
     release_kv_cache,
 )
 from sglang.srt.mem_cache.events import KvEventLoraNames
+from sglang.srt.mem_cache.pool_host.checkpoint import HostPoolCheckpoint
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
 from sglang.srt.model_executor.runner_utils.pool import prewarm_graph_pool_borrow
 from sglang.srt.model_loader.utils import get_resolved_model_impl
@@ -2357,7 +2358,19 @@ class Scheduler(
             release_memory_occupation=self.weight_updater.release_memory_occupation,
             resume_memory_occupation=self.weight_updater.resume_memory_occupation,
             send_output=self.ipc_channels.send_to_tokenizer.send_output,
+            resources=self._checkpoint_resources(),
         )
+
+    def _checkpoint_resources(self) -> list:
+        resources = []
+        if self.enable_hierarchical_cache:
+            resources.append(
+                HostPoolCheckpoint(
+                    tree_cache=self.tree_cache,
+                    storage_backend=get_memory().hicache_storage_backend,
+                )
+            )
+        return resources
 
     def init_lora_drainer(self) -> None:
         if get_lora().lora_drain_wait_threshold > 0.0:
