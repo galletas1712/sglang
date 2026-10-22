@@ -12,7 +12,7 @@ Weights stay on the GPU. Resume brings the KV cache back.
 """
 
 import logging
-from typing import Any, Callable, List, Set
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Set
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE
 from sglang.srt.managers.io_struct import (
@@ -23,6 +23,9 @@ from sglang.srt.managers.io_struct import (
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
 )
+
+if TYPE_CHECKING:
+    from sglang.srt.disaggregation.checkpoint import PdTransportCheckpoint
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class SchedulerCheckpointManager:
         release_memory_occupation: Callable[[ReleaseMemoryOccupationReqInput], None],
         resume_memory_occupation: Callable[[ResumeMemoryOccupationReqInput], None],
         all_gather_object: Callable[[Any], List[Any]],
+        pd_transport: Optional["PdTransportCheckpoint"],
     ) -> None:
         self._enable_memory_saver = enable_memory_saver
         self._pp_size = pp_size
@@ -50,6 +54,7 @@ class SchedulerCheckpointManager:
         self._resume_memory_occupation = resume_memory_occupation
         # Over the TP ranks of this DP rank.
         self._all_gather_object = all_gather_object
+        self._pd_transport = pd_transport
         self.state = CheckpointState.RUNNING
         self._error = ""
 
@@ -67,6 +72,9 @@ class SchedulerCheckpointManager:
                     self._resume_memory_occupation(
                         ResumeMemoryOccupationReqInput(tags=[GPU_MEMORY_TYPE_KV_CACHE])
                     )
+                    # After the KV cache, which the transport registers.
+                    if self._pd_transport is not None:
+                        self._pd_transport.checkpoint_resume()
                 except Exception as e:
                     self.state = CheckpointState.FAILED
                     self._error = f"Failed to resume from the checkpoint: {e}"
@@ -85,6 +93,13 @@ class SchedulerCheckpointManager:
             elif self._offload_tags:
                 success = False
                 message = f"Memory is already released: {sorted(self._offload_tags)}"
+            elif self._pd_transport is not None and not self._pd_transport.releasable:
+                success = False
+                message = (
+                    "The PD KV transfer transport cannot be released once started. "
+                    "Only a server started with --checkpoint-prepare-on-startup "
+                    "can prepare, before its first resume"
+                )
             elif self._is_engine_paused() and not self._is_drained():
                 # A paused scheduler no longer advances its grammar, KV transfer
                 # or HiCache queues, so a retract pause not idle now never is.
@@ -112,6 +127,8 @@ class SchedulerCheckpointManager:
             self._release_memory_occupation(
                 ReleaseMemoryOccupationReqInput(tags=[GPU_MEMORY_TYPE_KV_CACHE])
             )
+            if self._pd_transport is not None:
+                self._pd_transport.checkpoint_prepare()
         except Exception as e:
             self.state = CheckpointState.FAILED
             self._error = f"Failed to prepare for the checkpoint: {e}"

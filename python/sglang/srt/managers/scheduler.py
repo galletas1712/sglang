@@ -77,6 +77,7 @@ from sglang.srt.configs.model_config import (
 from sglang.srt.constrained.grammar_manager import GrammarManager
 from sglang.srt.debug_utils.pr_fix_toggle import maybe_revert_pr_fix
 from sglang.srt.disaggregation import role_switch
+from sglang.srt.disaggregation.checkpoint import PdTransportCheckpoint
 from sglang.srt.disaggregation.checksum import KvChecksumComputer
 from sglang.srt.disaggregation.decode import (
     DecodePreallocQueue,
@@ -2355,6 +2356,9 @@ class Scheduler(
         )
 
     def init_checkpoint_manager(self) -> None:
+        transport_queue = (
+            self.disagg_prefill_bootstrap_queue or self.disagg_decode_prealloc_queue
+        )
         self.checkpoint_manager = SchedulerCheckpointManager(
             enable_memory_saver=get_exec().features.enable_memory_saver,
             pp_size=get_parallel().pp_size,
@@ -2364,6 +2368,14 @@ class Scheduler(
             release_memory_occupation=self.weight_updater.release_memory_occupation,
             resume_memory_occupation=self.weight_updater.resume_memory_occupation,
             all_gather_object=self.dp_tp_group.all_gather_object,
+            pd_transport=(
+                PdTransportCheckpoint(
+                    queue=transport_queue,
+                    releasable=get_serving().checkpoint_prepare_on_startup,
+                )
+                if transport_queue is not None
+                else None
+            ),
         )
 
     def init_lora_drainer(self) -> None:

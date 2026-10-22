@@ -140,7 +140,13 @@ def init_parallel_runtime(
             get_parallel().tp_rank,
         )
         raise
-    maybe_init_shared_mooncake_transfer_engine(gpu_id=get_device().gpu_id)
+    # Created at the first checkpoint resume instead (disaggregation/checkpoint.py).
+    # Its other users, such as a HiCache mooncake store, then start without it.
+    if not (
+        get_serving().checkpoint_prepare_on_startup
+        and get_disagg().disaggregation_mode != "null"
+    ):
+        maybe_init_shared_mooncake_transfer_engine(gpu_id=get_device().gpu_id)
 
     parallel = get_parallel()
     if device == "cpu":

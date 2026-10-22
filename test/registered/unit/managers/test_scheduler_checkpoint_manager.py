@@ -13,11 +13,11 @@ from sglang.test.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 
 
-def _server(*drained, tp_size=1, release_error=None):
+def _server(*drained, tp_size=1, release_error=None, pd_transport=False):
     """A tokenizer over real scheduler checkpoint managers, `tp_size` per DP
     rank. `drained` says whether each DP rank goes idle, and the last TP rank
-    of each fails its KV cache release with `release_error`. Pause, continue
-    and the KV cache release are recorded in `calls`."""
+    of each fails its KV cache release with `release_error`. Pause, continue,
+    the KV cache release and the PD transport steps are recorded in `calls`."""
     calls = []
     engine_paused = [False]
 
@@ -56,6 +56,15 @@ def _server(*drained, tp_size=1, release_error=None):
             release_memory_occupation=release(fails=tp_rank == tp_size - 1),
             resume_memory_occupation=lambda req: calls.append("resume_kv"),
             all_gather_object=all_gather_object,
+            pd_transport=(
+                SimpleNamespace(
+                    releasable=True,
+                    checkpoint_prepare=lambda: calls.append("prepare_transport"),
+                    checkpoint_resume=lambda: calls.append("resume_transport"),
+                )
+                if pd_transport
+                else None
+            ),
         )
         for idle in drained
         for tp_rank in range(tp_size)
@@ -133,6 +142,24 @@ class TestCheckpointManager(unittest.TestCase):
         self.assertEqual(calls, ["resume_kv", "resume_kv", "continue"])
         self.assertEqual(_resume(tokenizer).state, CheckpointState.RUNNING)
         self.assertEqual(calls, ["resume_kv", "resume_kv", "continue"])
+
+    def test_pd_transport_follows_the_kv_cache(self):
+        """The transport registers the KV cache, so it resumes after it. Once
+        started it holds RDMA state that a checkpoint cannot contain, so
+        prepare must be refused before anything pauses or is released."""
+        tokenizer, ranks, calls = _server(True, pd_transport=True)
+        _prepare(tokenizer)
+        _resume(tokenizer)
+        self.assertEqual(
+            calls,
+            ["pause", "release", "prepare_transport"]
+            + ["resume_kv", "resume_transport", "continue"],
+        )
+
+        calls.clear()
+        ranks[0]._pd_transport.releasable = False
+        self.assertFalse(_prepare(tokenizer).success)
+        self.assertEqual(calls, [])
 
     def test_failed_release_latches(self):
         """Resuming a half-released server would serve without a KV cache, so a

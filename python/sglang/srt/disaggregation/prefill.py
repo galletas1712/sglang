@@ -96,6 +96,7 @@ from sglang.srt.runtime_context import (
     get_disagg,
     get_parallel,
     get_schedule,
+    get_serving,
 )
 from sglang.srt.utils import is_npu
 
@@ -237,7 +238,11 @@ class PrefillBootstrapQueue:
                     "SGLANG_DISAGG_STAGING_BUFFER with pp_size > 1 is only "
                     "supported by Mooncake."
                 )
-        self.kv_manager = self._init_kv_manager()
+        # See disaggregation/checkpoint.py.
+        if get_serving().checkpoint_prepare_on_startup:
+            self.kv_manager = self._init_kv_manager(TransferBackend.FAKE)
+        else:
+            self.start_kv_transport()
         if get_disagg().disaggregation_enable_kv_checksum:
             kv_args = self.kv_manager.kv_args
             self.scheduler.kv_checksum_computer = KvChecksumComputer(
@@ -250,7 +255,11 @@ class PrefillBootstrapQueue:
         else:
             self.scheduler.kv_checksum_computer = None
 
-    def _init_kv_manager(self) -> CommonKVManager:
+    def start_kv_transport(self) -> None:
+        """Create the real KV manager, replacing the fake one if any."""
+        self.kv_manager = self._init_kv_manager(self.transfer_backend)
+
+    def _init_kv_manager(self, manager_backend: TransferBackend) -> CommonKVManager:
         kv_args_class = get_kv_class(self.transfer_backend, KVClassType.KVARGS)
         kv_args = kv_args_class()
         kv_args.engine_rank = self.tp_rank
@@ -351,10 +360,10 @@ class PrefillBootstrapQueue:
             req_to_token_pool=req_to_token_pool,
         )
 
-        kv_manager_class = get_kv_class(self.transfer_backend, KVClassType.MANAGER)
+        kv_manager_class = get_kv_class(manager_backend, KVClassType.MANAGER)
         kv_manager_kwargs = (
             {"dcp_remote_decode_layout": dcp_remote_decode_layout}
-            if self.transfer_backend == TransferBackend.ASCEND
+            if manager_backend == TransferBackend.ASCEND
             else {}
         )
         kv_manager = kv_manager_class(

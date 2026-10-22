@@ -160,6 +160,7 @@ class TestDecodeHiCacheRestoreGate(CustomTestCase):
             queue = DecodeTransferQueue.__new__(DecodeTransferQueue)
             queue.queue = [decode_req]
             queue.enable_staging = False
+            queue.staging_handler = None
             queue.enable_host_receive = False
             queue.enable_deferred_kv_release = False
             queue.gloo_group = MagicMock()
