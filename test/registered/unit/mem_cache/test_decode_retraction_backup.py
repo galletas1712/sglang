@@ -388,7 +388,7 @@ class TestDecodeRetractionBackup(CustomTestCase):
             patch.object(FakeKVManager, "supports_host_destination", True),
             get_parallel().override(dp_rank=0),
         ):
-            queue.kv_manager = queue._init_kv_manager()
+            queue.kv_manager = queue._init_kv_manager(queue.transfer_backend)
         queue.scheduler.pool_stats_observer = SchedulerPoolStatsObserver(
             tree_cache=env.cache,
             token_to_kv_pool_allocator=env.allocator,
