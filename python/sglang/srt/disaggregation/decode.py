@@ -124,6 +124,7 @@ from sglang.srt.runtime_context import (
     get_disagg,
     get_memory,
     get_parallel,
+    get_serving,
 )
 from sglang.srt.utils import ceil_align, get_num_new_pages, is_npu
 from sglang.srt.utils.common import async_h2d
@@ -446,9 +447,11 @@ class DecodePreallocQueue(DecodeHiCachePreallocMixin):
                 "SGLANG_DISAGG_STAGING_BUFFER is designed for non-MLA models "
                 "(e.g. GQA, MHA). MLA models should not set this flag."
             )
-        self.kv_manager = self._init_kv_manager()
-        if self.enable_staging:
-            self.transfer_queue._init_staging_handler(self.kv_manager)
+        # See disaggregation/checkpoint.py.
+        if get_serving().checkpoint_prepare_on_startup:
+            self.kv_manager = self._init_kv_manager(TransferBackend.FAKE)
+        else:
+            self.start_kv_transport()
 
         if (
             self.scheduler.tp_worker.is_hybrid_swa
@@ -586,7 +589,13 @@ class DecodePreallocQueue(DecodeHiCachePreallocMixin):
             swa_len + swa_reserved,
         )
 
-    def _init_kv_manager(self) -> CommonKVManager:
+    def start_kv_transport(self) -> None:
+        """Create the real KV manager, replacing the fake one if any."""
+        self.kv_manager = self._init_kv_manager(self.transfer_backend)
+        if self.enable_staging:
+            self.transfer_queue._init_staging_handler(self.kv_manager)
+
+    def _init_kv_manager(self, manager_backend: TransferBackend) -> CommonKVManager:
         kv_args_class = get_kv_class(self.transfer_backend, KVClassType.KVARGS)
         kv_args = kv_args_class()
 
@@ -743,7 +752,7 @@ class DecodePreallocQueue(DecodeHiCachePreallocMixin):
 
         kv_args.ib_device = get_disagg().disaggregation_ib_device
         kv_args.gpu_id = get_device().gpu_id
-        kv_manager_class = get_kv_class(self.transfer_backend, KVClassType.MANAGER)
+        kv_manager_class = get_kv_class(manager_backend, KVClassType.MANAGER)
         kv_manager = kv_manager_class(
             kv_args,
             DisaggregationMode.DECODE,
@@ -2903,8 +2912,11 @@ class DecodeTransferQueue(DecodeHiCacheTransferMixin):
             if i in deferred_indices:
                 # Held for deferred release; metadata buffer freed at resolve time.
                 continue
-            if self.enable_staging and self.staging_handler.is_staging_room(
-                self.queue[i].req.bootstrap_room
+            if (
+                self.staging_handler is not None
+                and self.staging_handler.is_staging_room(
+                    self.queue[i].req.bootstrap_room
+                )
             ):
                 self.staging_handler.unregister_decode_req(
                     self.queue[i].req.bootstrap_room
@@ -2946,7 +2958,9 @@ class DecodeTransferQueue(DecodeHiCacheTransferMixin):
 
     def _do_release(self, decode_req: DecodeRequest, idx: int) -> None:
         room = decode_req.req.bootstrap_room
-        if self.enable_staging and self.staging_handler.is_staging_room(room):
+        if self.staging_handler is not None and self.staging_handler.is_staging_room(
+            room
+        ):
             self.staging_handler.unregister_decode_req(room)
         # release pre-allocated kv cache, but don't insert into the tree since it's failed
         self._release_request(decode_req)
