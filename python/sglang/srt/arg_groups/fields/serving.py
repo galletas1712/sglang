@@ -15,8 +15,8 @@ import msgspec
 from sglang.srt.arg_groups.arg_utils import (
     A,
     Arg,
+    json_list_type,
 )
-from sglang.srt.utils.common import json_list_type
 
 
 class Serving(msgspec.Struct):
@@ -100,7 +100,9 @@ class Serving(msgspec.Struct):
         "Start a locally managed sidecar against the native gRPC server. "
         "The selected module must expose main(argv) and read the resolved "
         "native gRPC endpoint from SGLANG_GRPC_ENDPOINT. Requires --grpc-port "
-        "or SGLANG_GRPC_PORT.",
+        "or SGLANG_GRPC_PORT. With SGLANG_RUST_SERVER, every node that hosts a "
+        "Rust listener runs one sidecar, with SGLANG_GRPC_ENDPOINT set to that "
+        "node's first listener (--grpc-port).",
     ] = None
     sidecar_args: A[
         Optional[List[str]],
@@ -116,6 +118,12 @@ class Serving(msgspec.Struct):
         Optional[str],
         "Specify custom warmup functions (csv) to run before server starts eg. --warmups=warmup_name1,warmup_name2 will run the functions `warmup_name1` and `warmup_name2` specified in warmup.py before the server starts listening for requests",
     ] = None
+    checkpoint_prepare_on_startup: A[
+        bool,
+        "After warmup and before serving, prepare for an external process "
+        "checkpoint as /checkpoint/prepare does. The server serves only after "
+        "/checkpoint/restore. Requires --enable-memory-saver.",
+    ] = False
     enable_http2: A[
         bool,
         "Use Granian instead of Uvicorn as the ASGI server, enabling HTTP/1.1 and HTTP/2 auto-negotiation. Clients may use h2c (cleartext HTTP/2) or plain HTTP/1.1. Requires 'pip install sglang[http2]'.",
